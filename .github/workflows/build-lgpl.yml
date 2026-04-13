@@ -1,0 +1,197 @@
+name: Build FFmpeg LGPL
+
+# Trigger on tags with ehaye- prefix only — never collides with upstream FFmpeg tags
+on:
+  push:
+    tags:
+      - 'ehaye-lgpl-*'
+
+# Example: git tag ehaye-lgpl-8.0.1-1 && git push origin ehaye-lgpl-8.0.1-1
+# Bumping the suffix (-1, -2, ...) rebuilds the same FFmpeg version with new flags
+
+permissions:
+  contents: write
+
+env:
+  # Keep in sync with build-ffmpeg.cjs CONFIGURE_FLAGS
+  COMMON_FLAGS: >-
+    --disable-gpl
+    --disable-nonfree
+    --disable-shared
+    --enable-static
+    --disable-doc
+    --disable-htmlpages
+    --disable-manpages
+    --disable-podpages
+    --disable-txtpages
+    --disable-debug
+    --enable-optimizations
+    --enable-stripping
+    --disable-libx264
+    --disable-libx265
+    --disable-libfdk-aac
+    --disable-xlib
+    --disable-libxcb
+    --disable-libxcb-shm
+    --disable-libxcb-xfixes
+    --disable-libxcb-shape
+    --enable-decoder=aac
+    --enable-decoder=mp3
+    --enable-decoder=pcm_s16le
+    --enable-decoder=pcm_f32le
+    --enable-encoder=aac
+    --enable-encoder=pcm_s16le
+    --enable-encoder=pcm_f32le
+    --enable-decoder=mjpeg
+    --enable-encoder=mpeg4
+    --enable-encoder=mjpeg
+    --enable-demuxer=wav
+    --enable-demuxer=mp3
+    --enable-demuxer=aac
+    --enable-demuxer=m4a
+    --enable-muxer=wav
+    --enable-muxer=mp3
+    --enable-muxer=ipod
+    --enable-demuxer=image2pipe
+    --enable-muxer=mp4
+    --enable-muxer=avi
+    --enable-filter=aresample
+    --enable-filter=volume
+    --enable-filter=atempo
+    --enable-filter=scale
+    --enable-protocol=file
+    --enable-protocol=pipe
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            artifact: ffmpeg-darwin-arm64
+            extra_flags: >-
+              --arch=arm64
+              --disable-videotoolbox
+              --disable-audiotoolbox
+              --disable-coreimage
+            deps: brew install nasm pkg-config
+
+          - os: ubuntu-latest
+            arch: x86_64
+            artifact: ffmpeg-linux-x64
+            extra_flags: >-
+              --arch=x86_64
+            deps: sudo apt-get update && sudo apt-get install -y nasm pkg-config
+
+          - os: ubuntu-22.04-arm
+            arch: aarch64
+            artifact: ffmpeg-linux-arm64
+            extra_flags: >-
+              --arch=aarch64
+            deps: sudo apt-get update && sudo apt-get install -y nasm pkg-config
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.artifact }}
+
+    steps:
+      - name: Checkout FFmpeg source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ${{ matrix.deps }}
+
+      - name: Configure FFmpeg
+        run: |
+          ./configure ${{ env.COMMON_FLAGS }} ${{ matrix.extra_flags }}
+
+      - name: Build FFmpeg
+        run: |
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Verify binary
+        run: |
+          ./ffmpeg -version
+          echo "---"
+          ./ffmpeg -buildconf 2>&1 | head -30
+          echo "---"
+          file ffmpeg
+          ls -lh ffmpeg
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          if command -v sha256sum &>/dev/null; then
+            SHA=$(sha256sum ffmpeg | awk '{print $1}')
+          else
+            SHA=$(shasum -a 256 ffmpeg | awk '{print $1}')
+          fi
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "$SHA  ${{ matrix.artifact }}" > ${{ matrix.artifact }}.sha256
+          echo "SHA256: $SHA"
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp ffmpeg dist/ffmpeg
+          chmod 755 dist/ffmpeg
+          cd dist
+          tar czf ../${{ matrix.artifact }}.tar.gz ffmpeg
+          cd ..
+          ls -lh ${{ matrix.artifact }}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Create Release
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ehAye FFmpeg LGPL - ${{ github.ref_name }}"
+          body: |
+            ## FFmpeg LGPL Build
+
+            Commercial-safe LGPL FFmpeg binaries built from pinned source.
+
+            **Build flags:** `--disable-gpl --disable-nonfree` (see workflow for full list)
+
+            ### Binaries
+
+            | Target | File | SHA256 |
+            |--------|------|--------|
+            | macOS ARM64 | `ffmpeg-darwin-arm64.tar.gz` | See `.sha256` file |
+            | Linux x86_64 | `ffmpeg-linux-x64.tar.gz` | See `.sha256` file |
+            | Linux ARM64 | `ffmpeg-linux-arm64.tar.gz` | See `.sha256` file |
+
+            ### Usage
+
+            ```bash
+            # Download and extract
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ffmpeg-linux-x64.tar.gz | tar xz
+            ```
+
+            ### License
+
+            These binaries are built with LGPL-only flags. No GPL or non-free components are included.
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
+          fail_on_unmatched_files: true
