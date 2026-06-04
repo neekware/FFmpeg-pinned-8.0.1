@@ -55,7 +55,21 @@
         load_dst1_dst2  24, 32, 40, 48
         sub             w3, w3, w0                                      // w3 = linesize  - width     (padding)
 .else
+ .ifc \ofmt,rgb24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+ .else
+  .ifc \ofmt,bgr24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+  .else
+   .if rgb16
+        sub             w3, w3, w0, lsl #1                              // w3 = linesize  - width * 2 (padding)
+   .else
         sub             w3, w3, w0, lsl #2                              // w3 = linesize  - width * 4 (padding)
+   .endif
+  .endif
+ .endif
 .endif
         sub             w5, w5, w0                                      // w5 = linesizeY - width     (paddingY)
         sub             w7, w7, w0                                      // w7 = linesizeC - width     (paddingC)
@@ -78,13 +92,39 @@
         load_dst1_dst2  40, 48, 56, 64
         sub             w3, w3, w0                                      // w3 = linesize  - width     (padding)
 .else
+ .ifc \ofmt,rgb24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+ .else
+  .ifc \ofmt,bgr24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+  .else
+   .if rgb16
+        sub             w3, w3, w0, lsl #1                              // w3 = linesize  - width * 2 (padding)
+   .else
         sub             w3, w3, w0, lsl #2                              // w3 = linesize  - width * 4 (padding)
+   .endif
+  .endif
+ .endif
 .endif
         sub             w5, w5, w0                                      // w5 = linesizeY - width     (paddingY)
         sub             w7,  w7,  w0, lsr #1                            // w7  = linesizeU - width / 2 (paddingU)
         sub             w14, w14, w0, lsr #1                            // w14 = linesizeV - width / 2 (paddingV)
         lsr             w11, w0, #1
         neg             w11, w11
+.endm
+
+.macro load_args_yuva420p ofmt
+        load_args_yuv420p \ofmt
+#if defined(__APPLE__)
+        ldr             x15, [sp, #32]                                  // srcA
+        ldr             w16, [sp, #40]                                  // linesizeA
+#else
+        ldr             x15, [sp, #40]                                  // srcA
+        ldr             w16, [sp, #48]                                  // linesizeA
+#endif
+        sub             w16, w16, w0                                    // w16 = linesizeA - width    (paddingA)
 .endm
 
 .macro load_args_yuv422p ofmt
@@ -99,7 +139,21 @@
         load_dst1_dst2  40, 48, 56, 64
         sub             w3, w3, w0                                      // w3 = linesize  - width     (padding)
 .else
+ .ifc \ofmt,rgb24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+ .else
+  .ifc \ofmt,bgr24
+        add             w17, w0, w0, lsl #1
+        sub             w3, w3, w17                                     // w3 = linesize  - width * 3 (padding)
+  .else
+   .if rgb16
+        sub             w3, w3, w0, lsl #1                              // w3 = linesize  - width * 2 (padding)
+   .else
         sub             w3, w3, w0, lsl #2                              // w3 = linesize  - width * 4 (padding)
+   .endif
+  .endif
+ .endif
 .endif
         sub             w5, w5, w0                                      // w5 = linesizeY - width     (paddingY)
         sub             w7,  w7,  w0, lsr #1                            // w7  = linesizeU - width / 2 (paddingU)
@@ -125,6 +179,10 @@
         ushll           v19.8h, v17.8b, #3
 .endm
 
+.macro load_chroma_yuva420p
+        load_chroma_yuv420p
+.endm
+
 .macro load_chroma_yuv422p
         load_chroma_yuv420p
 .endm
@@ -145,6 +203,11 @@
         add             x6,  x6,  w17, sxtw                             // srcU += incU
         csel            w17, w14, w11, ne                               // incV = (h & 1) ? paddincV : -width/2
         add             x13, x13, w17, sxtw                             // srcV += incV
+.endm
+
+.macro increment_yuva420p
+        increment_yuv420p
+        add             x15, x15, w16, sxtw                             // srcA += paddingA (every row)
 .endm
 
 .macro increment_yuv422p
@@ -169,65 +232,186 @@
 
 .macro compute_rgba r1 g1 b1 a1 r2 g2 b2 a2
         compute_rgb     \r1, \g1, \b1, \r2, \g2, \b2
-        movi            \a1, #255
-        movi            \a2, #255
+        mov             \a1, v30.8b
+        mov             \a2, v30.8b
+.endm
+
+.macro compute_rgba_alpha r1 g1 b1 a1 r2 g2 b2 a2
+        compute_rgb     \r1, \g1, \b1, \r2, \g2, \b2
+        mov             \a1, v28.8b                                     // real alpha (first 8 pixels)
+        mov             \a2, v29.8b                                     // real alpha (next 8 pixels)
+.endm
+
+// Map ofmt to .set predicates: rgb16=1 for the four 16bpp LE ofmts
+// (r_first=1 for rgb*, 0 for bgr*; gshift/hshift = 2/11 for 565,
+// 3/10 for 555), letting sibling macros branch on .if rgb16 instead of
+// repeating a four-way .ifc cascade.
+.macro set_rgb16_predicates ofmt
+        .set rgb16,     0
+        .set r_first,   0
+        .set gshift,    0
+        .set hshift,    0
+.ifc \ofmt,rgb565le
+        .set rgb16,     1
+        .set r_first,   1
+        .set gshift,    2
+        .set hshift,   11
+.endif
+.ifc \ofmt,bgr565le
+        .set rgb16,     1
+        .set gshift,    2
+        .set hshift,   11
+.endif
+.ifc \ofmt,rgb555le
+        .set rgb16,     1
+        .set r_first,   1
+        .set gshift,    3
+        .set hshift,   10
+.endif
+.ifc \ofmt,bgr555le
+        .set rgb16,     1
+        .set gshift,    3
+        .set hshift,   10
+.endif
+.endm
+
+// 16bpp packing uses v8/v9 as the accumulator. AAPCS-64 requires d8/d9
+// callee-saved (low 64 bits of v8/v9); other ofmts don't touch v8-v15,
+// so the spill is gated on rgb16.
+.macro save_d8_d9_if_16bpp
+.if rgb16
+        stp             d8, d9, [sp, #-0x10]!
+.endif
+.endm
+
+.macro restore_d8_d9_if_16bpp
+.if rgb16
+        ldp             d8, d9, [sp], #0x10
+.endif
+.endm
+
+// Pack 8 pixels of 16bpp output. The three channels are extracted via ushr,
+// widened to u16, then merged via shift-left-insert:
+//   dst = (high << high_shl) | (mid << 5) | low
+// For RGB565LE  pass (B, G, R) as (low, mid, high), g_shr=2, high_shl=11.
+// For BGR565LE  pass (R, G, B), g_shr=2, high_shl=11.
+// For RGB555LE  pass (B, G, R), g_shr=3, high_shl=10.
+// For BGR555LE  pass (R, G, B), g_shr=3, high_shl=10.
+// Clobbers v20-v23.
+.macro pack_rgb16 dst, low_ch, mid_ch, high_ch, g_shr, high_shl
+        ushr            v20.8b, \high_ch\().8b, #3
+        ushr            v21.8b, \mid_ch\().8b,  #\g_shr
+        ushr            v22.8b, \low_ch\().8b,  #3
+        uxtl            \dst\().8h, v22.8b
+        uxtl            v23.8h, v21.8b
+        sli             \dst\().8h, v23.8h, #5
+        uxtl            v23.8h, v20.8b
+        sli             \dst\().8h, v23.8h, #\high_shl
 .endm
 
 .macro declare_func ifmt ofmt
 function ff_\ifmt\()_to_\ofmt\()_neon, export=1
+        set_rgb16_predicates \ofmt
         load_args_\ifmt \ofmt
+        save_d8_d9_if_16bpp
 
+        movi            v31.8h, #4, lsl #8                              // 128 * (1<<3) (loop-invariant)
+        movi            v30.8b, #255                                    // alpha = 255  (loop-invariant)
         mov             w9, w1
 1:
         mov             w8, w0                                          // w8 = width
 2:
-        movi            v5.8h, #4, lsl #8                               // 128 * (1<<3)
         load_chroma_\ifmt
-        sub             v18.8h, v18.8h, v5.8h                           // U*(1<<3) - 128*(1<<3)
-        sub             v19.8h, v19.8h, v5.8h                           // V*(1<<3) - 128*(1<<3)
+        sub             v18.8h, v18.8h, v31.8h                          // U*(1<<3) - 128*(1<<3)
+        sub             v19.8h, v19.8h, v31.8h                          // V*(1<<3) - 128*(1<<3)
         sqdmulh         v20.8h, v19.8h, v1.h[0]                         // V * v2r            (R)
         sqdmulh         v22.8h, v18.8h, v1.h[1]                         // U * u2g
+        ld1             {v2.16b}, [x4], #16                             // load luma (interleaved)
+.ifc \ifmt,yuva420p
+        ld1             {v28.8b, v29.8b}, [x15], #16                    // load 16 alpha bytes
+.endif
         sqdmulh         v19.8h, v19.8h, v1.h[2]                         //           V * v2g
-        add             v22.8h, v22.8h, v19.8h                          // U * u2g + V * v2g  (G)
         sqdmulh         v24.8h, v18.8h, v1.h[3]                         // U * u2b            (B)
+        ushll           v26.8h, v2.8b,  #3                              // Y1*(1<<3)
+        ushll2          v27.8h, v2.16b, #3                              // Y2*(1<<3)
+        add             v22.8h, v22.8h, v19.8h                          // U * u2g + V * v2g  (G)
+        sub             v26.8h, v26.8h, v3.8h                           // Y1*(1<<3) - y_offset
+        sub             v27.8h, v27.8h, v3.8h                           // Y2*(1<<3) - y_offset
         zip2            v21.8h, v20.8h, v20.8h                          // R2
         zip1            v20.8h, v20.8h, v20.8h                          // R1
+        sqdmulh         v26.8h, v26.8h, v0.8h                           // ((Y1*(1<<3) - y_offset) * y_coeff) >> 15
+        sqdmulh         v27.8h, v27.8h, v0.8h                           // ((Y2*(1<<3) - y_offset) * y_coeff) >> 15
         zip2            v23.8h, v22.8h, v22.8h                          // G2
         zip1            v22.8h, v22.8h, v22.8h                          // G1
         zip2            v25.8h, v24.8h, v24.8h                          // B2
         zip1            v24.8h, v24.8h, v24.8h                          // B1
-        ld1             {v2.16b}, [x4], #16                             // load luma
-        ushll           v26.8h, v2.8b,  #3                              // Y1*(1<<3)
-        ushll2          v27.8h, v2.16b, #3                              // Y2*(1<<3)
-        sub             v26.8h, v26.8h, v3.8h                           // Y1*(1<<3) - y_offset
-        sub             v27.8h, v27.8h, v3.8h                           // Y2*(1<<3) - y_offset
-        sqdmulh         v26.8h, v26.8h, v0.8h                           // ((Y1*(1<<3) - y_offset) * y_coeff) >> 15
-        sqdmulh         v27.8h, v27.8h, v0.8h                           // ((Y2*(1<<3) - y_offset) * y_coeff) >> 15
 
 .ifc \ofmt,argb // 1 2 3 0
+ .ifc \ifmt,yuva420p
+        compute_rgba_alpha v5.8b,v6.8b,v7.8b,v4.8b, v17.8b,v18.8b,v19.8b,v16.8b
+ .else
         compute_rgba    v5.8b,v6.8b,v7.8b,v4.8b, v17.8b,v18.8b,v19.8b,v16.8b
+ .endif
 .endif
 
 .ifc \ofmt,rgba // 0 1 2 3
+ .ifc \ifmt,yuva420p
+        compute_rgba_alpha v4.8b,v5.8b,v6.8b,v7.8b, v16.8b,v17.8b,v18.8b,v19.8b
+ .else
         compute_rgba    v4.8b,v5.8b,v6.8b,v7.8b, v16.8b,v17.8b,v18.8b,v19.8b
+ .endif
 .endif
 
 .ifc \ofmt,abgr // 3 2 1 0
+ .ifc \ifmt,yuva420p
+        compute_rgba_alpha v7.8b,v6.8b,v5.8b,v4.8b, v19.8b,v18.8b,v17.8b,v16.8b
+ .else
         compute_rgba    v7.8b,v6.8b,v5.8b,v4.8b, v19.8b,v18.8b,v17.8b,v16.8b
+ .endif
 .endif
 
 .ifc \ofmt,bgra // 2 1 0 3
+ .ifc \ifmt,yuva420p
+        compute_rgba_alpha v6.8b,v5.8b,v4.8b,v7.8b, v18.8b,v17.8b,v16.8b,v19.8b
+ .else
         compute_rgba    v6.8b,v5.8b,v4.8b,v7.8b, v18.8b,v17.8b,v16.8b,v19.8b
+ .endif
 .endif
 
-.ifc \ofmt,gbrp
+.ifc \ofmt,rgb24
+        compute_rgb     v4.8b,v5.8b,v6.8b, v16.8b,v17.8b,v18.8b
+        st3             { v4.8b, v5.8b, v6.8b}, [x2], #24
+        st3             {v16.8b,v17.8b,v18.8b}, [x2], #24
+.else
+ .ifc \ofmt,bgr24
+        compute_rgb     v6.8b,v5.8b,v4.8b, v18.8b,v17.8b,v16.8b
+        st3             { v4.8b, v5.8b, v6.8b}, [x2], #24
+        st3             {v16.8b,v17.8b,v18.8b}, [x2], #24
+ .else
+  .ifc \ofmt,gbrp
         compute_rgb     v18.8b,v4.8b,v6.8b, v19.8b,v5.8b,v7.8b
         st1             {  v4.8b,  v5.8b }, [x2],  #16
         st1             {  v6.8b,  v7.8b }, [x10], #16
         st1             { v18.8b, v19.8b }, [x15], #16
-.else
+  .else
+   .if rgb16
+        compute_rgb     v4.8b,v5.8b,v6.8b, v16.8b,v17.8b,v18.8b
+    .if r_first
+        // rgb*le: (R << hshift) | (G << 5) | B
+        pack_rgb16      v8,  v6,  v5,  v4,  gshift, hshift
+        pack_rgb16      v9,  v18, v17, v16, gshift, hshift
+    .else
+        // bgr*le: (B << hshift) | (G << 5) | R
+        pack_rgb16      v8,  v4,  v5,  v6,  gshift, hshift
+        pack_rgb16      v9,  v16, v17, v18, gshift, hshift
+    .endif
+        st1             { v8.8h, v9.8h}, [x2], #32
+   .else
         st4             { v4.8b, v5.8b, v6.8b, v7.8b}, [x2], #32
         st4             {v16.8b,v17.8b,v18.8b,v19.8b}, [x2], #32
+   .endif
+  .endif
+ .endif
 .endif
         subs            w8, w8, #16                                     // width -= 16
         b.gt            2b
@@ -241,6 +425,7 @@ function ff_\ifmt\()_to_\ofmt\()_neon, export=1
         subs            w1, w1, #1                                      // height -= 1
         b.gt            1b
         mov             w0, w9
+        restore_d8_d9_if_16bpp
         ret
 endfunc
 .endm
@@ -251,9 +436,32 @@ endfunc
         declare_func    \ifmt, abgr
         declare_func    \ifmt, bgra
         declare_func    \ifmt, gbrp
+        declare_func    \ifmt, rgb24
+        declare_func    \ifmt, bgr24
 .endm
 
 declare_rgb_funcs nv12
 declare_rgb_funcs nv21
 declare_rgb_funcs yuv420p
 declare_rgb_funcs yuv422p
+
+.macro declare_rgb16_funcs ifmt
+        declare_func    \ifmt, rgb565le
+        declare_func    \ifmt, bgr565le
+        declare_func    \ifmt, rgb555le
+        declare_func    \ifmt, bgr555le
+.endm
+
+declare_rgb16_funcs nv12
+declare_rgb16_funcs nv21
+declare_rgb16_funcs yuv420p
+declare_rgb16_funcs yuv422p
+
+.macro declare_yuva_funcs ifmt
+        declare_func    \ifmt, argb
+        declare_func    \ifmt, rgba
+        declare_func    \ifmt, abgr
+        declare_func    \ifmt, bgra
+.endm
+
+declare_yuva_funcs yuva420p

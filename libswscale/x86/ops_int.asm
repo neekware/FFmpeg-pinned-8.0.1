@@ -52,13 +52,16 @@ mask2: times 32 db 0x03
 mask3: times 32 db 0x07
 mask4: times 32 db 0x0F
 
+const1b equ mask1
+const1w: times 16 dw 0x01
+
 SECTION .text
 
 ;---------------------------------------------------------
 ; Global entry point. See `ops_common.asm` for info.
 
 %macro process_fn 1 ; number of planes
-cglobal sws_process%1_x86, 6, 6 + 2 * %1, 16
+cglobal sws_process%1_x86, 6, 7 + 2 * %1, 16
             ; Args:
             ;   execq, implq, bxd, yd as defined in ops_common.int
             ;   bx_end and y_end are initially in tmp0d / tmp1d
@@ -78,6 +81,8 @@ cglobal sws_process%1_x86, 6, 6 + 2 * %1, 16
             add implq, SwsOpImpl.next
             mov [rsp +  0], tmp0q
             mov [rsp +  8], implq
+            movsxdifnidn bxq, bxd
+            movsxdifnidn yq, yd
 
             ; load plane pointers
             mov in0q,  [execq + SwsOpExec.in0]
@@ -88,27 +93,12 @@ IF %1 > 3,  mov in3q,  [execq + SwsOpExec.in3]
 IF %1 > 1,  mov out1q, [execq + SwsOpExec.out1]
 IF %1 > 2,  mov out2q, [execq + SwsOpExec.out2]
 IF %1 > 3,  mov out3q, [execq + SwsOpExec.out3]
-            jmp [rsp] ; call into op chain
-
-; Declare a separate global label for the return point, so that we can append
-; it to the list of op function pointers from the C code, effectively ensuring
-; that we end up here again after the op chain finishes processing a line.
-; (See also: cglobal_label in x86inc.asm)
-%if FORMAT_ELF
-    global current_function %+ _return:function hidden
-%elif FORMAT_MACHO && HAVE_PRIVATE_EXTERN
-    global current_function %+ _return:private_extern
-%else
-    global current_function %+ _return
-%endif
-align function_align
-current_function %+ _return:
-
-            ; op chain always returns back here
+.loop:
+            call [rsp] ; call into op chain
             mov implq, [rsp + 8]
             inc bxd
             cmp bxd, [rsp + 20]
-            jne .continue
+            jne .loop
             ; end of line
             inc yd
             cmp yd, [rsp + 24]
@@ -123,8 +113,29 @@ IF %1 > 1,  add out1q, [execq + SwsOpExec.out_bump1]
 IF %1 > 2,  add out2q, [execq + SwsOpExec.out_bump2]
 IF %1 > 3,  add out3q, [execq + SwsOpExec.out_bump3]
             mov bxd, [rsp + 16]
-.continue:
-            jmp [rsp]
+            ; conditionally apply y bump (if non-NULL)
+            mov tmp0q, [execq + SwsOpExec.in_bump_y]
+            test tmp0q, tmp0q
+            jz .loop
+            movsxd tmp0q, [tmp0q + yq * 4 - 4] ; load (signed) y bump
+%if %1 > 3
+            mov tmp1q, tmp0q
+            imul tmp1q, [execq + SwsOpExec.in_stride3]
+            add in3q, tmp1q
+%endif
+%if %1 > 2
+            mov tmp1q, tmp0q
+            imul tmp1q, [execq + SwsOpExec.in_stride2]
+            add in2q, tmp1q
+%endif
+%if %1 > 1
+            mov tmp1q, tmp0q
+            imul tmp1q, [execq + SwsOpExec.in_stride1]
+            add in1q, tmp1q
+%endif
+            imul tmp0q, [execq + SwsOpExec.in_stride0]
+            add in0q, tmp0q
+            jmp .loop
 .end:
             add rsp, 32
             RET
@@ -152,6 +163,16 @@ process_fn 4
 ; For the clean multiples (e.g. rgba -> argb), we also define AVX2 and AVX512
 ; versions that can handle a larger number of bytes at once.
 
+%macro MOVSIZE 3 ; size, dst, src
+    %if %1 <= 4
+        movd %2, %3
+    %elif %1 <= 8
+        movq %2, %3
+    %else
+        movu %2, %3
+    %endif
+%endmacro
+
 %macro packed_shuffle 2 ; size_in, size_out
 cglobal packed_shuffle%1_%2, 6, 10, 2, \
     exec, shuffle, bx, y, bxend, yend, src, dst, src_stride, dst_stride
@@ -174,15 +195,9 @@ cglobal packed_shuffle%1_%2, 6, 10, 2, \
             sub srcq, srcidxq
             sub dstq, dstidxq
 .loop:
-    %if %1 <= 4
-            movd m0, [srcq + srcidxq]
-    %elif %1 <= 8
-            movq m0, [srcq + srcidxq]
-    %else
-            movu m0, [srcq + srcidxq]
-    %endif
+            MOVSIZE %1, m0, [srcq + srcidxq]
             pshufb m0, m1
-            movu [dstq + dstidxq], m0
+            MOVSIZE %2, [dstq + dstidxq], m0
             add srcidxq, %1
 IF %1 != %2,add dstidxq, %2
             jnz .loop
@@ -203,9 +218,11 @@ packed_shuffle 16,  8 ; 16 -> 8
 packed_shuffle 10, 15 ; 16 -> 24
 packed_shuffle  8, 16 ; 16 -> 32, 32 -> 64
 packed_shuffle  4, 12 ; 16 -> 48
+packed_shuffle 15,  5 ; 24 -> 8
 packed_shuffle 15, 15 ; 24 -> 24
 packed_shuffle 12, 16 ; 24 -> 32
 packed_shuffle  6, 12 ; 24 -> 48
+packed_shuffle 16,  4 ; 32 -> 8,  64 -> 16
 packed_shuffle 16, 12 ; 32 -> 24, 64 -> 48
 packed_shuffle 16, 16 ; 32 -> 32, 64 -> 64
 packed_shuffle  8, 12 ; 32 -> 48
@@ -242,7 +259,6 @@ IF %1 > 3,  add in3q, mmsize * (1 + V2)
 
 %macro write_planar 1 ; elems
 op write_planar%1
-            LOAD_CONT tmp0q
             movu [out0q], mx
 IF %1 > 1,  movu [out1q], my
 IF %1 > 2,  movu [out2q], mz
@@ -257,7 +273,7 @@ IF %1 > 3,  movu [out3q + mmsize], mw2
 IF %1 > 1,  add out1q, mmsize * (1 + V2)
 IF %1 > 2,  add out2q, mmsize * (1 + V2)
 IF %1 > 3,  add out3q, mmsize * (1 + V2)
-            FINISH tmp0q
+            RET
 %endmacro
 
 %macro read_packed2 1 ; depth
@@ -284,7 +300,7 @@ IF %1 < 32, VBROADCASTI128 m12, [read%1_unpack2]
             unpckhpd my, m8, m9         ; { Y0 Y2 | Y1 Y3 }
     IF V2,  unpcklpd mx2, m10, m11
     IF V2,  unpckhpd my2, m10, m11
-%if avx_enabled
+%if cpuflag(avx2)
             vpermq mx, mx, q3120       ; { X0 X1 | X2 X3 }
             vpermq my, my, q3120       ; { Y0 Y1 | Y2 Y3 }
     IF V2,  vpermq mx2, mx2, q3120
@@ -296,8 +312,7 @@ IF %1 < 32, VBROADCASTI128 m12, [read%1_unpack2]
 %macro write_packed2 1 ; depth
 op write%1_packed2
 IF %1 < 32, VBROADCASTI128 m12, [write%1_pack2]
-            LOAD_CONT tmp0q
-%if avx_enabled
+%if cpuflag(avx2)
             vpermq mx, mx, q3120       ; { X0 X2 | X1 X3 }
             vpermq my, my, q3120       ; { Y0 Y2 | Y1 Y3 }
     IF V2,  vpermq mx2, mx2, q3120
@@ -323,7 +338,7 @@ IF %1 < 32, VBROADCASTI128 m12, [write%1_pack2]
 IF V2,      movu [out0q + 2*mmsize], m10
 IF V2,      movu [out0q + 3*mmsize], m11
             add out0q, mmsize * (2 + V2 * 2)
-            FINISH tmp0q
+            RET
 %endmacro
 
 ; helper macro reused for both 3 and 4 component packed reads
@@ -332,7 +347,7 @@ IF V2,      movu [out0q + 3*mmsize], m11
             movu xm9,  [%5 + 4  * %6]
             movu xm10, [%5 + 8  * %6]
             movu xm11, [%5 + 12 * %6]
-    %if avx_enabled
+    %if cpuflag(avx2)
             vinserti128 m8,  m8,  [%5 + 16 * %6], 1
             vinserti128 m9,  m9,  [%5 + 20 * %6], 1
             vinserti128 m10, m10, [%5 + 24 * %6], 1
@@ -393,7 +408,7 @@ IF1 V2,     read_packed_inner mx2, my2, mz2, mw2, in0q + %1 * mmsize, %1, %2
         movu [%5 +  4*%6], xm9
         movu [%5 +  8*%6], xm10
         movu [%5 + 12*%6], xm11
-    %if avx_enabled
+    %if cpuflag(avx2)
         vextracti128 [%5 + 16*%6], m8, 1
         vextracti128 [%5 + 20*%6], m9, 1
         vextracti128 [%5 + 24*%6], m10, 1
@@ -404,11 +419,10 @@ IF1 V2,     read_packed_inner mx2, my2, mz2, mw2, in0q + %1 * mmsize, %1, %2
 %macro write_packed 2 ; num, depth
 op write%2_packed%1
 IF %2 < 32, VBROADCASTI128 m12, [write%2_pack%1]
-            LOAD_CONT tmp0q
             write_packed_inner mx, my, mz, mw, out0q, %1, %2
 IF1 V2,     write_packed_inner mx2, my2, mz2, mw2, out0q + %1 * mmsize, %1, %2
             add out0q, %1 * mmsize * (1 + V2)
-            FINISH tmp0q
+            RET
 %endmacro
 
 %macro rw_packed 1 ; depth
@@ -422,7 +436,7 @@ IF1 V2,     write_packed_inner mx2, my2, mz2, mw2, out0q + %1 * mmsize, %1, %2
 
 %macro read_nibbles 0
 op read_nibbles1
-%if avx_enabled
+%if cpuflag(avx2)
         movu xmx,  [in0q]
 IF V2,  movu xmx2, [in0q + 16]
 %else
@@ -447,7 +461,7 @@ IF V2,  por mx2, my2
 
 %macro read_bits 0
 op read_bits1
-%if avx_enabled
+%if cpuflag(avx2)
         vpbroadcastd mx,  [in0q]
 IF V2,  vpbroadcastd mx2, [in0q + 4]
 %else
@@ -456,7 +470,7 @@ IF V2,  movd mx2, [in0q + 2]
 %endif
         mova m8, [bits_shuf]
         VBROADCASTI128 m9,  [bits_mask]
-        VBROADCASTI128 m10, [mask1]
+        VBROADCASTI128 m10, [const1b]
         LOAD_CONT tmp0q
         add in0q, (mmsize >> 3) * (1 + V2)
         pshufb mx,  m8
@@ -481,16 +495,15 @@ IF V2,  psllw mx2, 7
 IF V2,  pshufb mx2, m8
         pmovmskb tmp0d, mx
 IF V2,  pmovmskb tmp1d, mx2
-%if avx_enabled
-        mov [out0q],     tmp0d
-IF V2,  mov [out0q + 4], tmp1d
+%if mmsize >= 32
+        mov [out0q], tmp0d
+IF V2,  mov [out0q + (mmsize >> 3)], tmp1d
 %else
-        mov [out0q],     tmp0d
-IF V2,  mov [out0q + 2], tmp1d
+        mov [out0q], tmp0w
+IF V2,  mov [out0q + (mmsize >> 3)], tmp1w
 %endif
-        LOAD_CONT tmp0q
         add out0q, (mmsize >> 3) * (1 + V2)
-        FINISH tmp0q
+        RET
 %endmacro
 
 ;--------------------------
@@ -594,46 +607,45 @@ IF V2,  mova %3, %2
         CONTINUE tmp0q
 %endmacro
 
-; note: the pattern is inverted for these functions; i.e. X=1 implies that we
-; *keep* the X component, not that we clear it
 %macro clear_generic 0
 op clear
             LOAD_CONT tmp0q
-%if avx_enabled
-    IF !X,  vpbroadcastd mx, [implq + SwsOpImpl.priv + 0]
-    IF !Y,  vpbroadcastd my, [implq + SwsOpImpl.priv + 4]
-    IF !Z,  vpbroadcastd mz, [implq + SwsOpImpl.priv + 8]
-    IF !W,  vpbroadcastd mw, [implq + SwsOpImpl.priv + 12]
-%else ; !avx_enabled
-    IF !X,  movd mx, [implq + SwsOpImpl.priv + 0]
-    IF !Y,  movd my, [implq + SwsOpImpl.priv + 4]
-    IF !Z,  movd mz, [implq + SwsOpImpl.priv + 8]
-    IF !W,  movd mw, [implq + SwsOpImpl.priv + 12]
-    IF !X,  pshufd mx, mx, 0
-    IF !Y,  pshufd my, my, 0
-    IF !Z,  pshufd mz, mz, 0
-    IF !W,  pshufd mw, mw, 0
+%if cpuflag(avx2)
+    IF X,   vpbroadcastd mx, [implq + SwsOpImpl.priv + 0]
+    IF Y,   vpbroadcastd my, [implq + SwsOpImpl.priv + 4]
+    IF Z,   vpbroadcastd mz, [implq + SwsOpImpl.priv + 8]
+    IF W,   vpbroadcastd mw, [implq + SwsOpImpl.priv + 12]
+%else ; !cpuflag(avx2)
+    IF X,   movd mx, [implq + SwsOpImpl.priv + 0]
+    IF Y,   movd my, [implq + SwsOpImpl.priv + 4]
+    IF Z,   movd mz, [implq + SwsOpImpl.priv + 8]
+    IF W,   movd mw, [implq + SwsOpImpl.priv + 12]
+    IF X,   pshufd mx, mx, 0
+    IF Y,   pshufd my, my, 0
+    IF Z,   pshufd mz, mz, 0
+    IF W,   pshufd mw, mw, 0
 %endif
 %if V2
-    IF !X,  mova mx2, mx
-    IF !Y,  mova my2, my
-    IF !Z,  mova mz2, mz
-    IF !W,  mova mw2, mw
+    IF X,   mova mx2, mx
+    IF Y,   mova my2, my
+    IF Z,   mova mz2, mz
+    IF W,   mova mw2, mw
 %endif
             CONTINUE tmp0q
 %endmacro
 
 %macro clear_funcs 0
-        decl_pattern 1, 1, 1, 0, clear_generic
-        decl_pattern 0, 1, 1, 1, clear_generic
-        decl_pattern 0, 0, 1, 1, clear_generic
-        decl_pattern 1, 0, 0, 1, clear_generic
-        decl_pattern 1, 1, 0, 0, clear_generic
-        decl_pattern 0, 1, 0, 1, clear_generic
-        decl_pattern 1, 0, 1, 0, clear_generic
+        decl_pattern 0, 0, 0, 1, clear_generic
         decl_pattern 1, 0, 0, 0, clear_generic
+        decl_pattern 1, 1, 0, 0, clear_generic
         decl_pattern 0, 1, 0, 0, clear_generic
-        decl_pattern 0, 0, 1, 0, clear_generic
+        decl_pattern 0, 1, 1, 0, clear_generic
+        decl_pattern 0, 0, 1, 1, clear_generic
+        decl_pattern 1, 0, 1, 0, clear_generic
+        decl_pattern 0, 1, 0, 1, clear_generic
+        decl_pattern 0, 1, 1, 1, clear_generic
+        decl_pattern 1, 0, 1, 1, clear_generic
+        decl_pattern 1, 1, 0, 1, clear_generic
 %endmacro
 
 ;---------------------------------------------------------
@@ -802,7 +814,7 @@ op swizzle_1000
 op %1_U8_U16
             LOAD_CONT tmp0q
 %if V2
-    %if avx_enabled
+    %if cpuflag(avx2)
     IF X,   vextracti128 xmx2, mx, 1
     IF Y,   vextracti128 xmy2, my, 1
     IF Z,   vextracti128 xmz2, mz, 1
@@ -951,7 +963,7 @@ IF W,   vpermq mw, mw, q3120
 %endmacro
 
 ;---------------------------------------------------------
-; Shifting
+; Shifting and scaling
 
 %macro lshift16 0
 op lshift16
@@ -987,6 +999,16 @@ IF W,   psrlw mw2, xm8
         CONTINUE tmp0q
 %endmacro
 
+; special cases for expanding bits to full range
+%macro expand_bits 2 ; bits, suffix
+op expand_bits%1
+        mova m8, [const1%2]
+        LOAD_CONT tmp0q
+        pcmpeq%2 mx, m8
+IF V2,  pcmpeq%2 mx2, m8
+        CONTINUE tmp0q
+%endmacro
+
 ;---------------------------------------------------------
 ; Macro instantiations for kernel functions
 
@@ -1004,6 +1026,7 @@ IF W,   psrlw mw2, xm8
     read_nibbles
     read_bits
     write_bits
+    expand_bits 8, b
 
     pack_generic 1, 2, 1
     pack_generic 3, 3, 2
@@ -1026,6 +1049,7 @@ IF W,   psrlw mw2, xm8
 
 %macro funcs_u16 0
     rw_packed 16
+    expand_bits 16, w
     pack_generic  4, 4, 4
     pack_generic  5, 5, 5
     pack_generic  5, 6, 5

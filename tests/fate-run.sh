@@ -43,8 +43,17 @@ esac
 
 
 target_path(){
-    test ${1} = ${1#/} && p=${target_path}/
-    echo ${p}${1}
+    case ${1} in
+    [a-zA-Z]:/*)
+        echo ${1}
+        ;;
+    /*)
+        echo ${1}
+        ;;
+    *)
+        echo ${target_path}/${1}
+        ;;
+    esac
 }
 
 # $1=value1, $2=value2, $3=threshold
@@ -92,6 +101,16 @@ run(){
 runecho(){
     test "${V:-0}" -gt 0 && echo "$target_exec" $target_path/"$@" >&3
     $target_exec $target_path/"$@" >&3
+}
+
+run_with_temp(){
+    create_tmp=$1
+    process_tmp=$2
+    filext=$3
+    tmpfile=${outdir}/$test.$filext
+    cleanfiles="$cleanfiles $tmpfile"
+    run $create_tmp $tmpfile || return 1
+    run $process_tmp $tmpfile
 }
 
 probefmt(){
@@ -412,9 +431,12 @@ lavf_container_fate()
     file=${outdir}/lavf.$t
     cleanfiles="$cleanfiles $file"
     input="${target_samples}/$1"
+    ffprobe_opts=$5
     do_avconv $file -auto_conversion_filters $DEC_OPTS $2 -i "$input" \
               "$ENC_OPTS -metadata title=lavftest" $3 -vcodec copy -acodec copy || return
     do_avconv_crc $file -auto_conversion_filters $DEC_OPTS -i $target_path/$file $4
+    test -z "$ffprobe_opts" || \
+        run ffprobe${PROGSUF}${EXECSUF} -bitexact -threads $threads $ffprobe_opts $file || return
 }
 
 lavf_image(){
@@ -668,6 +690,18 @@ venc_data(){
     stream=$2
     frames=$3
     run tools/venc_data_dump${EXECSUF} ${file} ${stream} ${frames} ${threads} ${thread_type}
+}
+
+generic_tags(){
+    src_fmt="$1"
+    srcfile="$2"
+    enc_fmt="$3"
+    enc_codec="$4"
+    extra_args="${5:-}"
+    transcode "$src_fmt" "$srcfile" "$enc_fmt" \
+        "-c:a $enc_codec $extra_args" \
+        "-c copy" \
+        "-show_entries format_tags"
 }
 
 null(){

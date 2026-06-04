@@ -354,6 +354,16 @@ int attribute_align_arg avcodec_open2(AVCodecContext *avctx, const AVCodec *code
         if (!avctx->bit_rate)
             avctx->bit_rate = get_bit_rate(avctx);
 
+
+        if (avctx->codec_type == AVMEDIA_TYPE_AUDIO &&
+            !avctx->frame_size && (avctx->flags2 & AV_CODEC_FLAG2_FIXED_FRAME_SIZE)) {
+            av_log(avctx, AV_LOG_ERROR, "Fixed frame size requested but no frame_size value set\n");
+            ret = AVERROR(EINVAL);
+            goto free_and_end;
+        }
+
+        avci->skip_samples = avctx->delay;
+
         /* validate channel layout from the decoder */
         if ((avctx->ch_layout.nb_channels && !av_channel_layout_check(&avctx->ch_layout)) ||
             avctx->ch_layout.nb_channels > FF_SANE_NB_CHANNELS) {
@@ -705,7 +715,8 @@ int avcodec_is_open(AVCodecContext *s)
     return !!s->internal;
 }
 
-int attribute_align_arg avcodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+int attribute_align_arg avcodec_receive_frame_flags(AVCodecContext *avctx,
+                                               AVFrame *frame, unsigned flags)
 {
     av_frame_unref(frame);
 
@@ -713,8 +724,13 @@ int attribute_align_arg avcodec_receive_frame(AVCodecContext *avctx, AVFrame *fr
         return AVERROR(EINVAL);
 
     if (ff_codec_is_decoder(avctx->codec))
-        return ff_decode_receive_frame(avctx, frame);
+        return ff_decode_receive_frame(avctx, frame, flags);
     return ff_encode_receive_frame(avctx, frame);
+}
+
+int avcodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+{
+    return avcodec_receive_frame_flags(avctx, frame, 0);
 }
 
 #define WRAP_CONFIG(allowed_type, field, var, field_type, sentinel_check)   \

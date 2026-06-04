@@ -33,7 +33,7 @@ static int cbs_apv_get_num_comp(const APVRawFrameHeader *fh)
     case APV_CHROMA_FORMAT_4444:
         return 4;
     default:
-        av_assert0(0 && "Invalid chroma_format_idc");
+        av_unreachable("Invalid chroma_format_idc");
     }
 }
 
@@ -201,7 +201,7 @@ static int cbs_apv_split_fragment(CodedBitstreamContext *ctx,
 
         if (size < 8) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid PBU: "
-                   "fragment too short (%"SIZE_SPECIFIER" bytes).\n",
+                   "fragment too short (%zu bytes).\n",
                    size);
             err = AVERROR_INVALIDDATA;
             goto fail;

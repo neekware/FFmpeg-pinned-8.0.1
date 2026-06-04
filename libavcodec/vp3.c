@@ -943,7 +943,8 @@ static int unpack_vectors(Vp3DecodeContext *s, GetBitContext *gb)
                         last_gold_motion_x = motion_x[0] = vp4_get_mv(gb, 0, last_gold_motion_x);
                         last_gold_motion_y = motion_y[0] = vp4_get_mv(gb, 1, last_gold_motion_y);
                         break;
-                    } /* otherwise fall through */
+                    }
+                    av_fallthrough;
                 case MODE_INTER_PLUS_MV:
                     /* all 6 fragments use the same motion vector */
                     if (coding_mode == 0) {
@@ -2874,6 +2875,8 @@ static int theora_decode_header(AVCodecContext *avctx, GetBitContext *gb)
     if (av_image_check_size(visible_width, visible_height, 0, avctx) < 0 ||
         visible_width  + offset_x > s->width ||
         visible_height + offset_y > s->height ||
+        visible_width  + 512 < s->width  ||
+        visible_height + 512 < s->height ||
         visible_width < 18
     ) {
         av_log(avctx, AV_LOG_ERROR,

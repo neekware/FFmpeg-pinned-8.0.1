@@ -19,6 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/attributes.h"
 #include "libavutil/avstring.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/intfloat.h"
@@ -237,6 +238,7 @@ static void unpack_frame(AVCodecContext *avctx, AVFrame *p, const uint8_t *buf,
         break;
     case 16:
         elements *= 2;
+        av_fallthrough;
     case 8:
         if (   avctx->pix_fmt == AV_PIX_FMT_YUVA444P
             || avctx->pix_fmt == AV_PIX_FMT_YUV444P) {
@@ -612,6 +614,7 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *p,
     av_dict_set(&p->metadata, "Input Device", input_device, 0);
 
     // Some devices do not pad 10bit samples to whole 32bit words per row
+    dpx->unpadded_10bit = 0;
     if (!memcmp(input_device, "Scanity", 7) ||
         !memcmp(creator, "Lasergraphics Inc.", 18)) {
         if (avctx->bits_per_raw_sample == 10)

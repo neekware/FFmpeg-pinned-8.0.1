@@ -346,8 +346,6 @@ fail:
 static int d3d12va_encode_av1_get_buffer_size(AVCodecContext *avctx,
                                               D3D12VAEncodePicture *pic, size_t *size)
 {
-    D3D12VAEncodeContext                                    *ctx = avctx->priv_data;
-    D3D12_VIDEO_ENCODER_OUTPUT_METADATA                    *meta = NULL;
     D3D12_VIDEO_ENCODER_FRAME_SUBREGION_METADATA *subregion_meta = NULL;
     uint8_t                                                *data = NULL;
     HRESULT                                                   hr = S_OK;
@@ -383,7 +381,6 @@ static int d3d12va_encode_av1_get_coded_data(AVCodecContext *avctx,
     size_t    av1_pic_hd_size = 0;
     int tile_group_extra_size = 0;
     size_t            bit_len = 0;
-    D3D12VAEncodeContext *ctx = avctx->priv_data;
 
     char pic_hd_data[MAX_PARAM_BUFFER_SIZE] = { 0 };
 
@@ -406,7 +403,7 @@ static int d3d12va_encode_av1_get_coded_data(AVCodecContext *avctx,
     av_log(avctx, AV_LOG_DEBUG, "Tile group extra size: %d bytes.\n", tile_group_extra_size);
 
     total_size += (pic->header_size + tile_group_extra_size + av1_pic_hd_size);
-    av_log(avctx, AV_LOG_DEBUG, "Output buffer size %"SIZE_SPECIFIER"\n", total_size);
+    av_log(avctx, AV_LOG_DEBUG, "Output buffer size %zu\n", total_size);
 
     hr = ID3D12Resource_Map(pic->output_buffer, 0, NULL, (void **)&mapped_data);
     if (FAILED(hr)) {
@@ -428,7 +425,7 @@ static int d3d12va_encode_av1_get_coded_data(AVCodecContext *avctx,
     memcpy(ptr, pic_hd_data, av1_pic_hd_size);
     ptr += av1_pic_hd_size;
     total_size -= av1_pic_hd_size;
-    av_log(avctx, AV_LOG_DEBUG, "AV1 total_size after write picture header: %d.\n", total_size);
+    av_log(avctx, AV_LOG_DEBUG, "AV1 total_size after write picture header: %zu.\n", total_size);
 
     total_size -= tile_group_extra_size;
     err = d3d12va_encode_av1_write_tile_group(avctx, mapped_data, total_size, ptr, &bit_len);
@@ -559,7 +556,7 @@ static int d3d12va_encode_av1_init_sequence_params(AVCodecContext *avctx)
         .Codec                            = D3D12_VIDEO_ENCODER_CODEC_AV1,
         .InputFormat                      = hwctx->format,
         .RateControl                      = ctx->rc,
-        .IntraRefresh                     = D3D12_VIDEO_ENCODER_INTRA_REFRESH_MODE_NONE,
+        .IntraRefresh                     = ctx->intra_refresh.Mode,
         .SubregionFrameEncoding           = D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_FULL_FRAME,
         .ResolutionsListCount             = 1,
         .pResolutionList                  = &ctx->resolution,
@@ -583,14 +580,38 @@ static int d3d12va_encode_av1_init_sequence_params(AVCodecContext *avctx)
     }
 
     if (!(support.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_GENERAL_SUPPORT_OK)) {
-        av_log(avctx, AV_LOG_ERROR, "Driver does not support some request D3D12VA AV1 features. %#x\n",
+        av_log(avctx, AV_LOG_ERROR, "Driver does not support requested features. ValidationFlags: %#x\n",
                support.ValidationFlags);
+        ff_d3d12va_encode_check_encoder_feature_flags(avctx, support.ValidationFlags);
         return AVERROR(EINVAL);
     }
 
     if (support.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_RECONSTRUCTED_FRAMES_REQUIRE_TEXTURE_ARRAYS) {
         ctx->is_texture_array = 1;
         av_log(avctx, AV_LOG_DEBUG, "D3D12 video encode on this device uses texture array mode.\n");
+    }
+
+    // Check if the configuration with DELTA_QP is supported
+    if (support.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_RATE_CONTROL_DELTA_QP_AVAILABLE) {
+        base_ctx->roi_allowed = 1;
+        // Store the QP map region size from resolution limits
+        ctx->qp_map_region_size = ctx->res_limits.QPMapRegionPixelsSize;
+        av_log(avctx, AV_LOG_DEBUG, "ROI encoding is supported via delta QP "
+               "(QP map region size: %d pixels).\n", ctx->qp_map_region_size);
+    } else {
+        base_ctx->roi_allowed = 0;
+        av_log(avctx, AV_LOG_DEBUG, "ROI encoding not supported by hardware for current rate control mode \n");
+    }
+
+    // Check motion estimation precision mode support
+    if (ctx->me_precision != D3D12_VIDEO_ENCODER_MOTION_ESTIMATION_PRECISION_MODE_MAXIMUM) {
+        if (!(support.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_MOTION_ESTIMATION_PRECISION_MODE_LIMIT_AVAILABLE)) {
+            av_log(avctx, AV_LOG_ERROR, "Hardware does not support motion estimation "
+                "precision mode limits.\n");
+            return AVERROR(ENOTSUP);
+        }
+        av_log(avctx, AV_LOG_VERBOSE, "Hardware supports motion estimation "
+            "precision mode limits.\n");
     }
 
     memset(seqheader_obu, 0, sizeof(*seqheader_obu));
@@ -995,9 +1016,13 @@ static int d3d12va_encode_av1_init_picture_params(AVCodecContext *avctx,
             d3d12va_pic->pic_ctl.pAV1PicData->ReferenceIndices[i] = fh->ref_frame_idx[i];
     }
 
-    int ret = av_fifo_write(priv->picture_header_list, &priv->units.raw_frame_header, 1);
+    // Process ROI side data if present and supported
+    if (base_ctx->roi_allowed && d3d12va_pic->qp_map && d3d12va_pic->qp_map_size > 0) {
+        d3d12va_pic->pic_ctl.pAV1PicData->QPMapValuesCount  = d3d12va_pic->qp_map_size;
+        d3d12va_pic->pic_ctl.pAV1PicData->pRateControlQPMap = (INT16 *)d3d12va_pic->qp_map;
+    }
 
-    return 0;
+    return av_fifo_write(priv->picture_header_list, &priv->units.raw_frame_header, 1);
 }
 
 
@@ -1082,6 +1107,7 @@ static int d3d12va_encode_av1_close(AVCodecContext *avctx)
 #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM)
 static const AVOption d3d12va_encode_av1_options[] = {
     HW_BASE_ENCODE_COMMON_OPTIONS,
+    D3D12VA_ENCODE_COMMON_OPTIONS,
     D3D12VA_ENCODE_RC_OPTIONS,
 
     { "qp", "Constant QP (for P-frames; scaled by qfactor/qoffset for I/B)",

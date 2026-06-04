@@ -760,6 +760,7 @@ AVFilterContext *ff_filter_alloc(const AVFilter *filter, const char *inst_name)
 err:
     if (preinited)
         fi->uninit(ret);
+    av_freep(&ret->name);
     av_freep(&ret->inputs);
     av_freep(&ret->input_pads);
     ret->nb_inputs = 0;
@@ -1084,8 +1085,6 @@ int ff_filter_frame(AVFilterLink *link, AVFrame *frame)
             if (av_pix_fmt_desc_get(link->format)->flags & AV_PIX_FMT_FLAG_ALPHA)
                 av_assert1(frame->alpha_mode == link->alpha_mode);
         }
-
-        frame->sample_aspect_ratio = link->sample_aspect_ratio;
     } else {
         if (frame->format != link->format) {
             av_log(link->dst, AV_LOG_ERROR, "Format change is not supported\n");

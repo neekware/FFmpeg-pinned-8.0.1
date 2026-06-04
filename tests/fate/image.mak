@@ -384,6 +384,12 @@ fate-jpegls-5bpc: CMD = framecrc -idct simple -i $(TARGET_SAMPLES)/jpegls/32.jls
 FATE_JPEGLS += fate-jpegls-7bpc
 fate-jpegls-7bpc: CMD = framecrc -idct simple -i $(TARGET_SAMPLES)/jpegls/128.jls
 
+FATE_JPEGLS += fate-jpegls-ilv0-rst
+fate-jpegls-ilv0-rst: CMD = framecrc -idct simple -i $(TARGET_SAMPLES)/jpegls/ilv0_rst.jls
+
+FATE_JPEGLS += fate-jpegls-ilv1-rst
+fate-jpegls-ilv1-rst: CMD = framecrc -idct simple -i $(TARGET_SAMPLES)/jpegls/ilv1_rst.jls
+
 FATE_JPEGLS-$(call DEMDEC, IMAGE2, JPEGLS) += $(FATE_JPEGLS)
 FATE_IMAGE_FRAMECRC += $(FATE_JPEGLS-yes)
 fate-jpegls: $(FATE_JPEGLS-yes)
@@ -444,7 +450,7 @@ FATE_PSD-$(call DEMDEC, IMAGE2, PSD, SCALE_FILTER) += fate-psd-$(1)
 fate-psd-$(1): CMD = framecrc -i $(TARGET_SAMPLES)/psd/lena-$(1).psd -sws_flags +accurate_rnd+bitexact -pix_fmt rgb24 -vf scale
 endef
 
-PSD_COLORSPACES = gray8 gray16 rgb24 rgb48 rgba rgba64 ya8 ya16
+PSD_COLORSPACES = gray8 gray16 rgb24 rgb48 rgba rgbxx rgba64 ya8 ya16
 $(foreach CLSP,$(PSD_COLORSPACES),$(eval $(call FATE_IMGSUITE_PSD,$(CLSP))))
 
 FATE_PSD += fate-psd-lena-127x127-rgb24
@@ -582,6 +588,19 @@ fate-webp-rgba-lossy-q80: CMD = framecrc -i $(TARGET_SAMPLES)/webp/rgba_q80.webp
 FATE_WEBP-$(call DEMDEC, IMAGE2, WEBP) += $(FATE_WEBP)
 FATE_IMAGE_FRAMECRC += $(FATE_WEBP-yes)
 fate-webp: $(FATE_WEBP-yes)
+
+FATE_WEBP_ANIM += fate-webp-anim
+fate-webp-anim: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim.webp
+
+FATE_WEBP_ANIM += fate-webp-chfmt1
+fate-webp-chfmt1: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim_rgb_yuv.webp
+
+FATE_WEBP_ANIM += fate-webp-chfmt2
+fate-webp-chfmt2: CMD = framecrc -reinit_filter 0 -i $(TARGET_SAMPLES)/webp/anim_yuv_rgb.webp
+
+FATE_WEBP_ANIM-$(call DEMDEC, WEBP_ANIM, WEBP_ANIM) += $(FATE_WEBP_ANIM)
+FATE_IMAGE_FRAMECRC += $(FATE_WEBP_ANIM-yes)
+fate-webp: $(FATE_WEBP_ANIM-yes)
 
 FATE_IMAGE_FRAMECRC-$(call DEMDEC, IMAGE2, XFACE) += fate-xface
 fate-xface: CMD = framecrc -i $(TARGET_SAMPLES)/xface/lena.xface

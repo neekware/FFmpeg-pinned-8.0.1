@@ -234,6 +234,7 @@ STLIBOBJS-$(CONFIG_SWSCALE)             += half2float.o
 SHLIBOBJS-$(HAVE_GNU_WINDRES)           += avutilres.o
 
 SKIPHEADERS                            += objc.h
+SKIPHEADERS-$(CONFIG_ZLIB)             += zlib_utils.h
 SKIPHEADERS-$(HAVE_CUDA_H)             += hwcontext_cuda.h
 SKIPHEADERS-$(CONFIG_CUDA)             += hwcontext_cuda_internal.h     \
                                           cuda_check.h
@@ -252,22 +253,27 @@ SKIPHEADERS-$(CONFIG_VULKAN)           += hwcontext_vulkan.h vulkan.h   \
                                           vulkan_loader.h
 SKIPHEADERS-$(CONFIG_LIBSHADERC)       += vulkan_spirv.h
 SKIPHEADERS-$(CONFIG_LIBGLSLANG)       += vulkan_spirv.h
+SKIPHEADERS-$(CONFIG_SHADER_COMPRESSION) += zlib_utils.h
 
 TESTPROGS = adler32                                                     \
             aes                                                         \
             aes_ctr                                                     \
+            ambient_viewing_environment                                 \
             audio_fifo                                                  \
             avstring                                                    \
             base64                                                      \
             blowfish                                                    \
             bprint                                                      \
+            buffer                                                      \
             cast5                                                       \
             camellia                                                    \
             channel_layout                                              \
             color_utils                                                 \
             cpu                                                         \
             crc                                                         \
+            csp                                                         \
             des                                                         \
+            detection_bbox                                              \
             dict                                                        \
             display                                                     \
             encryption_info                                             \
@@ -275,7 +281,9 @@ TESTPROGS = adler32                                                     \
             eval                                                        \
             file                                                        \
             fifo                                                        \
+            film_grain_params                                           \
             hash                                                        \
+            hdr_dynamic_vivid_metadata                                  \
             hmac                                                        \
             hwdevice                                                    \
             integer                                                     \
@@ -283,6 +291,7 @@ TESTPROGS = adler32                                                     \
             lfg                                                         \
             lls                                                         \
             log                                                         \
+            mathematics                                                 \
             md5                                                         \
             murmur3                                                     \
             opt                                                         \
@@ -293,15 +302,23 @@ TESTPROGS = adler32                                                     \
             pixfmt_best                                                 \
             random_seed                                                 \
             rational                                                    \
+            rc4                                                         \
             ripemd                                                      \
             sha                                                         \
             sha512                                                      \
+            samplefmt                                                   \
             side_data_array                                             \
             softfloat                                                   \
+            spherical                                                   \
+            stereo3d                                                    \
+            tdrdi                                                       \
+            timecode                                                    \
+            timestamp                                                   \
             tree                                                        \
             twofish                                                     \
             utf8                                                        \
             uuid                                                        \
+            video_enc_params                                            \
             xtea                                                        \
             tea                                                         \
 

@@ -390,7 +390,7 @@ static int export_stream_params_from_sei(HEVCContext *s)
 
 #if FF_API_CODEC_PROPS
 FF_DISABLE_DEPRECATION_WARNINGS
-    if (s->sei.common.a53_caption.buf_ref)
+    if (s->sei.common.itut_t35.a53_cc)
         s->avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
@@ -404,7 +404,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
 #if FF_API_CODEC_PROPS
 FF_DISABLE_DEPRECATION_WARNINGS
     if ((s->sei.common.film_grain_characteristics && s->sei.common.film_grain_characteristics->present) ||
-        s->sei.common.aom_film_grain.enable)
+        s->sei.common.itut_t35.aom_film_grain.enable)
         avctx->properties |= FF_CODEC_PROPERTY_FILM_GRAIN;
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
@@ -683,7 +683,7 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
 #if CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL
         *fmt++ = AV_PIX_FMT_VIDEOTOOLBOX;
 #endif
-    /* NOTE: fallthrough */
+        av_fallthrough;
     case AV_PIX_FMT_YUV420P12:
     case AV_PIX_FMT_YUV444P12:
 #if CONFIG_HEVC_VAAPI_HWACCEL
@@ -1019,7 +1019,7 @@ static int hls_slice_header(SliceHeader *sh, const HEVCContext *s, GetBitContext
 
             if ((pps->weighted_pred_flag   && sh->slice_type == HEVC_SLICE_P) ||
                 (pps->weighted_bipred_flag && sh->slice_type == HEVC_SLICE_B)) {
-                int ret = pred_weight_table(sh, s->avctx, sps, gb);
+                ret = pred_weight_table(sh, s->avctx, sps, gb);
                 if (ret < 0)
                     return ret;
             }
@@ -1662,16 +1662,12 @@ static int hls_pcm_sample(HEVCLocalContext *lc, const HEVCLayerContext *l,
     GetBitContext gb;
     int cb_size   = 1 << log2_cb_size;
     ptrdiff_t stride0 = s->cur_frame->f->linesize[0];
-    ptrdiff_t stride1 = s->cur_frame->f->linesize[1];
-    ptrdiff_t stride2 = s->cur_frame->f->linesize[2];
     uint8_t *dst0 = &s->cur_frame->f->data[0][y0 * stride0 + (x0 << sps->pixel_shift)];
-    uint8_t *dst1 = &s->cur_frame->f->data[1][(y0 >> sps->vshift[1]) * stride1 + ((x0 >> sps->hshift[1]) << sps->pixel_shift)];
-    uint8_t *dst2 = &s->cur_frame->f->data[2][(y0 >> sps->vshift[2]) * stride2 + ((x0 >> sps->hshift[2]) << sps->pixel_shift)];
 
-    int length         = cb_size * cb_size * sps->pcm.bit_depth +
+    int length         = cb_size * cb_size * sps->pcm.bit_depth + (sps->chroma_format_idc != 0 ?
                          (((cb_size >> sps->hshift[1]) * (cb_size >> sps->vshift[1])) +
                           ((cb_size >> sps->hshift[2]) * (cb_size >> sps->vshift[2]))) *
-                          sps->pcm.bit_depth_chroma;
+                          sps->pcm.bit_depth_chroma : 0);
     const uint8_t *pcm = skip_bytes(&lc->cc, (length + 7) >> 3);
     int ret;
 
@@ -1682,8 +1678,13 @@ static int hls_pcm_sample(HEVCLocalContext *lc, const HEVCLayerContext *l,
     if (ret < 0)
         return ret;
 
-    s->hevcdsp.put_pcm(dst0, stride0, cb_size, cb_size,     &gb, sps->pcm.bit_depth);
+    s->hevcdsp.put_pcm(dst0, stride0, cb_size, cb_size, &gb, sps->pcm.bit_depth);
     if (sps->chroma_format_idc) {
+        ptrdiff_t stride1 = s->cur_frame->f->linesize[1];
+        ptrdiff_t stride2 = s->cur_frame->f->linesize[2];
+        uint8_t *dst1 = &s->cur_frame->f->data[1][(y0 >> sps->vshift[1]) * stride1 + ((x0 >> sps->hshift[1]) << sps->pixel_shift)];
+        uint8_t *dst2 = &s->cur_frame->f->data[2][(y0 >> sps->vshift[2]) * stride2 + ((x0 >> sps->hshift[2]) << sps->pixel_shift)];
+
         s->hevcdsp.put_pcm(dst1, stride1,
                            cb_size >> sps->hshift[1],
                            cb_size >> sps->vshift[1],
@@ -2931,7 +2932,7 @@ static int hls_slice_data_wpp(HEVCContext *s, const H2645NAL *nal)
     int *ret;
     int64_t offset;
     int64_t startheader, cmpt = 0;
-    int i, j, res = 0;
+    int j, res = 0;
 
     if (s->sh.slice_ctb_addr_rs + s->sh.num_entry_point_offsets * sps->ctb_width >= sps->ctb_width * sps->ctb_height) {
         av_log(s->avctx, AV_LOG_ERROR, "WPP ctb addresses are wrong (%d %d %d %d)\n",
@@ -2973,7 +2974,7 @@ static int hls_slice_data_wpp(HEVCContext *s, const H2645NAL *nal)
         }
     }
 
-    for (i = 1; i < s->sh.num_entry_point_offsets; i++) {
+    for (int i = 1; i < s->sh.num_entry_point_offsets; i++) {
         offset += (s->sh.entry_point_offset[i - 1] - cmpt);
         for (j = 0, cmpt = 0, startheader = offset
              + s->sh.entry_point_offset[i]; j < nal->skipped_bytes; j++) {
@@ -3000,7 +3001,7 @@ static int hls_slice_data_wpp(HEVCContext *s, const H2645NAL *nal)
 
     s->data = data;
 
-    for (i = 1; i < s->nb_local_ctx; i++) {
+    for (unsigned i = 1; i < s->nb_local_ctx; i++) {
         s->local_ctx[i].first_qp_group = 1;
         s->local_ctx[i].qp_y = s->local_ctx[0].qp_y;
     }
@@ -3017,7 +3018,7 @@ static int hls_slice_data_wpp(HEVCContext *s, const H2645NAL *nal)
     if (pps->entropy_coding_sync_enabled_flag)
         s->avctx->execute2(s->avctx, hls_decode_entry_wpp, s->local_ctx, ret, s->sh.num_entry_point_offsets + 1);
 
-    for (i = 0; i <= s->sh.num_entry_point_offsets; i++)
+    for (int i = 0; i <= s->sh.num_entry_point_offsets; i++)
         res += ret[i];
 
     av_free(ret);
@@ -3131,8 +3132,8 @@ static int set_side_data(HEVCContext *s)
         s->sei.timecode.num_clock_ts = 0;
     }
 
-    if (s->sei.common.dynamic_hdr_plus.info) {
-        AVBufferRef *info_ref = av_buffer_ref(s->sei.common.dynamic_hdr_plus.info);
+    if (s->sei.common.itut_t35.hdr_plus) {
+        AVBufferRef *info_ref = av_buffer_ref(s->sei.common.itut_t35.hdr_plus);
         if (!info_ref)
             return AVERROR(ENOMEM);
 
@@ -3152,10 +3153,10 @@ static int set_side_data(HEVCContext *s)
     if ((ret = ff_dovi_attach_side_data(&s->dovi_ctx, out)) < 0)
         return ret;
 
-    if (s->sei.common.dynamic_hdr_vivid.info) {
+    if (s->sei.common.itut_t35.hdr_vivid) {
         if (!av_frame_side_data_add(&out->side_data, &out->nb_side_data,
                                     AV_FRAME_DATA_DYNAMIC_HDR_VIVID,
-                                    &s->sei.common.dynamic_hdr_vivid.info,
+                                    &s->sei.common.itut_t35.hdr_vivid,
                                     AV_FRAME_SIDE_DATA_FLAG_NEW_REF))
             return AVERROR(ENOMEM);
     }
@@ -3195,6 +3196,7 @@ static int find_finish_setup_nal(const HEVCContext *s)
         case HEVC_NAL_RASL_R:
             if (!get_bits1(&gb)) // first_slice_segment_in_pic_flag
                 continue;
+            av_fallthrough;
         case HEVC_NAL_VPS:
         case HEVC_NAL_SPS:
         case HEVC_NAL_PPS:
@@ -3348,7 +3350,7 @@ static int hevc_frame_start(HEVCContext *s, HEVCLayerContext *l,
 
     s->cur_frame->needs_fg = ((s->sei.common.film_grain_characteristics &&
                                s->sei.common.film_grain_characteristics->present) ||
-                              s->sei.common.aom_film_grain.enable) &&
+                              s->sei.common.itut_t35.aom_film_grain.enable) &&
         !(s->avctx->export_side_data & AV_CODEC_EXPORT_DATA_FILM_GRAIN) &&
         !s->avctx->hwaccel;
 
@@ -3665,10 +3667,11 @@ static int decode_nal_unit(HEVCContext *s, unsigned nal_idx)
     case HEVC_NAL_EOB_NUT:
     case HEVC_NAL_AUD:
     case HEVC_NAL_FD_NUT:
-    case HEVC_NAL_UNSPEC62:
+    case HEVC_NAL_UNSPEC62: // Dolby Vision RPU
+    case HEVC_NAL_UNSPEC63: // Dolby Vision EL
         break;
     default:
-        av_log(s->avctx, AV_LOG_INFO,
+        av_log(s->avctx, AV_LOG_VERBOSE,
                "Skipping NAL unit %d\n", s->nal_unit_type);
     }
 
@@ -3691,7 +3694,7 @@ static void decode_reset_recovery_point(HEVCContext *s)
 
 static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
 {
-    int i, ret = 0;
+    int ret = 0;
     int eos_at_start = 1;
     int flags = (H2645_FLAG_IS_NALFF * !!s->is_nalff) | H2645_FLAG_SMALL_PADDING;
 
@@ -3717,7 +3720,7 @@ static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
         return ret;
     }
 
-    for (i = 0; i < s->pkt.nb_nals; i++) {
+    for (int i = 0; i < s->pkt.nb_nals; i++) {
         if (s->pkt.nals[i].type == HEVC_NAL_EOB_NUT ||
             s->pkt.nals[i].type == HEVC_NAL_EOS_NUT) {
             if (eos_at_start) {
@@ -3765,7 +3768,7 @@ static int decode_nal_units(HEVCContext *s, const uint8_t *buf, int length)
     }
 
     /* decode the NAL units */
-    for (i = 0; i < s->pkt.nb_nals; i++) {
+    for (int i = 0; i < s->pkt.nb_nals; i++) {
         H2645NAL *nal = &s->pkt.nals[i];
 
         if (s->avctx->skip_frame >= AVDISCARD_ALL ||
@@ -4077,8 +4080,8 @@ static int hevc_update_thread_context(AVCodecContext *dst,
     if (ret < 0)
         return ret;
 
-    ret = av_buffer_replace(&s->sei.common.dynamic_hdr_plus.info,
-                            s0->sei.common.dynamic_hdr_plus.info);
+    ret = av_buffer_replace(&s->sei.common.itut_t35.hdr_plus,
+                            s0->sei.common.itut_t35.hdr_plus);
     if (ret < 0)
         return ret;
 
@@ -4088,8 +4091,8 @@ static int hevc_update_thread_context(AVCodecContext *dst,
 
     ff_dovi_ctx_replace(&s->dovi_ctx, &s0->dovi_ctx);
 
-    ret = av_buffer_replace(&s->sei.common.dynamic_hdr_vivid.info,
-                            s0->sei.common.dynamic_hdr_vivid.info);
+    ret = av_buffer_replace(&s->sei.common.itut_t35.hdr_vivid,
+                            s0->sei.common.itut_t35.hdr_vivid);
     if (ret < 0)
         return ret;
 

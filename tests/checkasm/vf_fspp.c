@@ -52,9 +52,9 @@ static void check_store_slice(void)
     };
     FSPPDSPContext fspp;
     ff_fsppdsp_init(&fspp);
-    declare_func_emms(AV_CPU_FLAG_MMX, void, uint8_t *dst, int16_t *src,
-                      ptrdiff_t dst_stride, ptrdiff_t src_stride,
-                      ptrdiff_t width, ptrdiff_t height, ptrdiff_t log2_scale);
+    declare_func(void, uint8_t *dst, int16_t *src,
+                       ptrdiff_t dst_stride, ptrdiff_t src_stride,
+                       ptrdiff_t width, ptrdiff_t height, ptrdiff_t log2_scale);
 
     for (int i = 0; i < 2; ++i) {
         if (check_func(i ? fspp.store_slice2 : fspp.store_slice, "store_slice%s", i ? "2" : "")) {
@@ -165,6 +165,9 @@ static void check_column_fidct(void)
 void checkasm_check_vf_fspp(void)
 {
     check_store_slice();
+    report("store_slice");
     check_mul_thrmat();
+    report("mul_thrmat");
     check_column_fidct();
+    report("column_fidct");
 }

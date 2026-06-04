@@ -227,6 +227,9 @@ int enc_open(void *opaque, const AVFrame *frame)
                    frame->ch_layout.nb_channels > 0);
         enc_ctx->sample_fmt     = frame->format;
         enc_ctx->sample_rate    = frame->sample_rate;
+        if (!enc_ctx->frame_size && (!(enc->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE) ||
+                                      (enc_ctx->flags2 & AV_CODEC_FLAG2_FIXED_FRAME_SIZE)))
+            enc_ctx->frame_size = frame->nb_samples;
         ret = av_channel_layout_copy(&enc_ctx->ch_layout, &frame->ch_layout);
         if (ret < 0)
             return ret;
@@ -728,7 +731,7 @@ static int encode_frame(OutputFile *of, OutputStream *ost, AVFrame *frame,
         }
     }
 
-    av_assert0(0);
+    av_unreachable("encode_frame() loop should return");
 }
 
 static enum AVPictureType forced_kf_apply(void *logctx, KeyframeForceCtx *kf,
@@ -767,6 +770,9 @@ static enum AVPictureType forced_kf_apply(void *logctx, KeyframeForceCtx *kf,
             goto force_keyframe;
         }
     } else if (kf->type == KF_FORCE_SOURCE && (frame->flags & AV_FRAME_FLAG_KEY)) {
+        goto force_keyframe;
+    } else if (kf->type == KF_FORCE_SCD_METADATA &&
+               av_dict_get(frame->metadata, "lavfi.scd.time", NULL, 0)) {
         goto force_keyframe;
     }
 
